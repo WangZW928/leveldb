@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>LevelDB Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Noto Sans SC', sans-serif; background: #0d1117; color: #c9d1d9; display: flex; }
+  svg { width: 100%; height: 100%; }
+  .legend { position: fixed; bottom: 24px; right: 24px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; font-size: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  .legend-box { width: 14px; height: 14px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<svg viewBox="0 0 1200 1500" xmlns="http://www.w3.org/2000/svg">
+
+<defs>
+  <linearGradient id="gAPI" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#1f6feb"/><stop offset="100%" style="stop-color:#58a6ff"/>
+  </linearGradient>
+  <linearGradient id="gWrite" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#f59e0b"/><stop offset="100%" style="stop-color:#fbbf24"/>
+  </linearGradient>
+  <linearGradient id="gMem" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#7c3aed"/><stop offset="100%" style="stop-color:#a78bfa"/>
+  </linearGradient>
+  <linearGradient id="gRead" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#10b981"/><stop offset="100%" style="stop-color:#34d399"/>
+  </linearGradient>
+  <linearGradient id="gSST" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#0ea5e9"/><stop offset="100%" style="stop-color:#38bdf8"/>
+  </linearGradient>
+  <linearGradient id="gComp" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#ef4444"/><stop offset="100%" style="stop-color:#f87171"/>
+  </linearGradient>
+  <linearGradient id="gMeta" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" style="stop-color:#ec4899"/><stop offset="100%" style="stop-color:#f472b6"/>
+  </linearGradient>
+  <filter id="glow">
+    <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+    <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <marker id="aWrite" markerWidth="8" markerHeight="6" refX="4" refY="3" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#fbbf24"/>
+  </marker>
+  <marker id="aRead" markerWidth="8" markerHeight="6" refX="4" refY="3" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#34d399"/>
+  </marker>
+  <marker id="aPurple" markerWidth="8" markerHeight="6" refX="4" refY="3" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#a78bfa"/>
+  </marker>
+  <marker id="aComp" markerWidth="8" markerHeight="6" refX="4" refY="3" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#f87171"/>
+  </marker>
+  <marker id="aBlue" markerWidth="8" markerHeight="6" refX="4" refY="3" orient="auto">
+    <path d="M0,0 L8,3 L0,6 Z" fill="#58a6ff"/>
+  </marker>
+</defs>
+
+<rect width="1200" height="1500" fill="#0d1117"/>
+
+<!-- Title -->
+<text x="600" y="36" text-anchor="middle" fill="#f0f6fc" font-size="20" font-weight="700">LevelDB 架构 — LSM Tree 存储引擎</text>
+<text x="600" y="58" text-anchor="middle" fill="#8b949e" font-size="12">Google Jeff Dean &amp; Sanjay Ghemawat · 嵌入式键值存储库 · 1,104 行深度分析</text>
+
+<!-- ===== SECTION A: API LAYER ===== -->
+<rect x="50" y="74" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="92" fill="#f0f6fc" font-size="12" font-weight="600">公开 API — include/leveldb/*.h · 极简接口设计</text>
+
+<rect x="120" y="110" width="210" height="44" rx="8" fill="#1f48a8" stroke="#1f6feb" stroke-width="1.5"/>
+<text x="225" y="130" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">DB::Put(key, value)</text>
+<text x="225" y="146" text-anchor="middle" fill="#1f6feb" font-size="9">写入键值对</text>
+
+<rect x="360" y="110" width="210" height="44" rx="8" fill="#1f48a8" stroke="#1f6feb" stroke-width="1.5"/>
+<text x="465" y="130" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">DB::Get(key) → value</text>
+<text x="465" y="146" text-anchor="middle" fill="#1f6feb" font-size="9">读取键值对</text>
+
+<rect x="600" y="110" width="210" height="44" rx="8" fill="#1f48a8" stroke="#1f6feb" stroke-width="1.5"/>
+<text x="705" y="130" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">DB::Delete(key)</text>
+<text x="705" y="146" text-anchor="middle" fill="#1f6feb" font-size="9">逻辑删除（墓碑）</text>
+
+<rect x="840" y="110" width="240" height="44" rx="8" fill="#1f48a8" stroke="#1f6feb" stroke-width="1.5"/>
+<text x="960" y="130" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">WriteBatch / Snapshot</text>
+<text x="960" y="146" text-anchor="middle" fill="#1f6feb" font-size="9">批量写入 / 快照读</text>
+
+<!-- ===== SECTION B: WRITE PATH ===== -->
+<rect x="50" y="170" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="188" fill="#fbbf24" font-size="12" font-weight="600">✏️ 写路径 — db/db_impl.cc · 追加写 + 内存排序</text>
+
+<!-- Write path flow -->
+<rect x="80" y="206" width="180" height="36" rx="6" fill="url(#gWrite)" opacity="0.15"/>
+<text x="170" y="224" text-anchor="middle" fill="#fbbf24" font-size="10">Put(key, value)</text>
+<line x1="260" y1="224" x2="290" y2="224" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#aWrite)"/>
+
+<rect x="300" y="206" width="180" height="36" rx="6" fill="url(#gWrite)" opacity="0.20"/>
+<text x="390" y="224" text-anchor="middle" fill="#fbbf24" font-size="10">WriteBatch 封装</text>
+<line x1="480" y1="224" x2="510" y2="224" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#aWrite)"/>
+
+<rect x="520" y="206" width="180" height="36" rx="6" fill="url(#gWrite)" opacity="0.25"/>
+<text x="610" y="224" text-anchor="middle" fill="#fbbf24" font-size="10">追加 Log (WAL)</text>
+<line x1="610" y1="242" x2="610" y2="265" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,2"/>
+<text x="610" y="258" text-anchor="middle" fill="#92400e" font-size="7">先写日志，保证持久性</text>
+
+<line x1="700" y1="224" x2="730" y2="224" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#aWrite)"/>
+
+<rect x="740" y="206" width="180" height="36" rx="6" fill="url(#gMem)" opacity="0.25"/>
+<text x="830" y="224" text-anchor="middle" fill="#a78bfa" font-size="10">写入 MemTable</text>
+<line x1="830" y1="242" x2="830" y2="265" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3,2"/>
+<text x="830" y="258" text-anchor="middle" fill="#7c3aed" font-size="7">SkipList 实现 · O(log N) 插入</text>
+
+<line x1="920" y1="224" x2="950" y2="224" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#aPurple)"/>
+
+<rect x="960" y="206" width="160" height="36" rx="6" fill="#052e16" stroke="#10b981" stroke-width="1.5"/>
+<text x="1040" y="224" text-anchor="middle" fill="#34d399" font-size="10">写入完成 ✓</text>
+
+<!-- MemTable full -->
+<line x1="830" y1="265" x2="830" y2="305" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#aPurple)"/>
+
+<rect x="690" y="308" width="280" height="52" rx="8" fill="#2d1b69" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="830" y="328" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">MemTable 满 → Immutable MemTable</text>
+<text x="830" y="348" text-anchor="middle" fill="#7c3aed" font-size="9">冻结当前 MemTable · 创建新 MemTable</text>
+
+<line x1="830" y1="360" x2="830" y2="398" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#aPurple)"/>
+
+<rect x="690" y="402" width="280" height="52" rx="8" fill="#0c2d48" stroke="#0ea5e9" stroke-width="1.5"/>
+<text x="830" y="422" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="700">后台线程 Flush → Level 0 SSTable</text>
+<text x="830" y="442" text-anchor="middle" fill="#0ea5e9" font-size="9">排序 + 写入 .ldb 文件（不可变）</text>
+
+<!-- ===== SECTION C: LSM TREE STRUCTURE ===== -->
+<rect x="50" y="472" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="490" fill="#0ea5e9" font-size="12" font-weight="600">📁 LSM Tree 磁盘层级 — table/*.cc · 七级金字塔</text>
+
+<!-- Level 0 -->
+<rect x="80" y="506" width="1040" height="54" rx="8" fill="#0c2d48" stroke="#0ea5e9" stroke-width="1.2"/>
+<text x="600" y="524" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="700">Level 0 (L0)</text>
+<text x="600" y="544" text-anchor="middle" fill="#0ea5e9" font-size="10" opacity="0.8">~8-12 MB each · 键范围可能重叠 · 写满 4 个文件触发 Compaction</text>
+
+<!-- Level 1 -->
+<rect x="80" y="568" width="1040" height="54" rx="8" fill="#0c2d48" stroke="#0ea5e9" stroke-width="1.2" opacity="0.85"/>
+<text x="600" y="586" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="700">Level 1 (L1)</text>
+<text x="600" y="606" text-anchor="middle" fill="#0ea5e9" font-size="10" opacity="0.8">~10 MB total · 键范围不重叠 · 与 L0 重叠文件合并</text>
+
+<!-- Level 2 -->
+<rect x="80" y="630" width="1040" height="54" rx="8" fill="#0c2d48" stroke="#0ea5e9" stroke-width="1.2" opacity="0.70"/>
+<text x="600" y="648" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="700">Level 2 (L2)</text>
+<text x="600" y="668" text-anchor="middle" fill="#0ea5e9" font-size="10" opacity="0.8">~100 MB total · 每层容量 ×10</text>
+
+<!-- Level N -->
+<rect x="80" y="694" width="1040" height="36" rx="8" fill="#0c2d48" stroke="#0ea5e9" stroke-width="1" opacity="0.5"/>
+<text x="600" y="712" text-anchor="middle" fill="#38bdf8" font-size="11">Level 3 ~ Level 6 · 每层容量 ×10 · 数据量指数增长 · 读放大可控</text>
+
+<!-- Growth annotation -->
+<rect x="80" y="738" width="1040" height="24" rx="4" fill="#161b22"/>
+<text x="600" y="755" text-anchor="middle" fill="#484f58" font-size="9">L0 可能重叠 ← Compaction 去重+排序 → L1+ 严格不重叠 ← Bloom Filter 加速点查</text>
+
+<!-- ===== SECTION D: SSTABLE INTERNALS ===== -->
+<rect x="50" y="776" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="794" fill="#0ea5e9" font-size="12" font-weight="600">📦 SSTable 内部结构 — table/table_builder.cc · 排序不可变文件</text>
+
+<rect x="80" y="810" width="1040" height="70" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+<rect x="100" y="822" width="240" height="46" rx="5" fill="url(#gSST)" opacity="0.1"/>
+<text x="220" y="842" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="600">Data Blocks</text>
+<text x="220" y="858" text-anchor="middle" fill="#0ea5e9" font-size="8">~4KB · 前缀压缩 · 按 key 排序</text>
+
+<rect x="370" y="822" width="240" height="46" rx="5" fill="url(#gSST)" opacity="0.13"/>
+<text x="490" y="842" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="600">Filter Block</text>
+<text x="490" y="858" text-anchor="middle" fill="#0ea5e9" font-size="8">Bloom Filter · 快速判断 key 是否存在</text>
+
+<rect x="640" y="822" width="240" height="46" rx="5" fill="url(#gSST)" opacity="0.16"/>
+<text x="760" y="842" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="600">Index Block</text>
+<text x="760" y="858" text-anchor="middle" fill="#0ea5e9" font-size="8">每个 Data Block 的 key range → offset</text>
+
+<rect x="910" y="822" width="190" height="46" rx="5" fill="url(#gSST)" opacity="0.19"/>
+<text x="1005" y="842" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="600">Footer</text>
+<text x="1005" y="858" text-anchor="middle" fill="#0ea5e9" font-size="8">Metaindex + Index 的偏移和魔数</text>
+
+<!-- ===== SECTION E: READ PATH ===== -->
+<rect x="50" y="900" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="918" fill="#34d399" font-size="12" font-weight="600">🔍 读路径 — db/db_impl.cc · 从快到慢逐层查找</text>
+
+<!-- Flow -->
+<rect x="80" y="936" width="160" height="34" rx="6" fill="url(#gRead)" opacity="0.15"/>
+<text x="160" y="958" text-anchor="middle" fill="#34d399" font-size="10">Get(key)</text>
+<line x1="240" y1="953" x2="270" y2="953" stroke="#34d399" stroke-width="1.5" marker-end="url(#aRead)"/>
+
+<rect x="280" y="936" width="170" height="34" rx="6" fill="url(#gRead)" opacity="0.18"/>
+<text x="365" y="958" text-anchor="middle" fill="#34d399" font-size="10">① 查 MemTable</text>
+
+<rect x="465" y="936" width="170" height="34" rx="6" fill="url(#gRead)" opacity="0.21"/>
+<text x="550" y="958" text-anchor="middle" fill="#34d399" font-size="10">② 查 Immutable</text>
+
+<rect x="650" y="936" width="170" height="34" rx="6" fill="url(#gRead)" opacity="0.24"/>
+<text x="735" y="958" text-anchor="middle" fill="#34d399" font-size="10">③ 查 SSTable L0</text>
+
+<rect x="835" y="936" width="170" height="34" rx="6" fill="url(#gRead)" opacity="0.27"/>
+<text x="920" y="958" text-anchor="middle" fill="#34d399" font-size="10">④ 查 SSTable L1+</text>
+
+<rect x="1020" y="936" width="100" height="34" rx="6" fill="#052e16" stroke="#10b981" stroke-width="1.5"/>
+<text x="1070" y="958" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">找到 ✓</text>
+
+<!-- Arrow chain -->
+<line x1="450" y1="953" x2="465" y2="953" stroke="#34d399" stroke-width="1.5" marker-end="url(#aRead)"/>
+<line x1="635" y1="953" x2="650" y2="953" stroke="#34d399" stroke-width="1.5" marker-end="url(#aRead)"/>
+<line x1="820" y1="953" x2="835" y2="953" stroke="#34d399" stroke-width="1.5" marker-end="url(#aRead)"/>
+<line x1="1005" y1="953" x2="1020" y2="953" stroke="#34d399" stroke-width="1.5" marker-end="url(#aRead)"/>
+
+<!-- Optimization notes -->
+<rect x="80" y="980" width="1060" height="36" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="600" y="996" text-anchor="middle" fill="#8b949e" font-size="9">L0 需检查所有重叠文件（因为 key range 可能相交）· L1+ 通过二分查找 Index Block 定位唯一 SSTable</text>
+<text x="600" y="1012" text-anchor="middle" fill="#8b949e" font-size="9">SSTable 内部：Footer → Index Block → Data Block 位置 → Bloom Filter 判断 → 如果命中则二分查找 Data Block</text>
+
+<!-- ===== SECTION F: CORE COMPONENTS ===== -->
+<rect x="50" y="1032" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="1050" fill="#c9d1d9" font-size="12" font-weight="600">🧩 核心组件 — 接口抽象与实现分离</text>
+
+<!-- Row 1 -->
+<rect x="80" y="1068" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="202" y="1086" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Slice</text>
+<text x="202" y="1104" text-anchor="middle" fill="#8b949e" font-size="8">非拥有型字符串视图</text>
+<text x="202" y="1118" text-anchor="middle" fill="#8b949e" font-size="8">std::string_view 的先驱</text>
+
+<rect x="345" y="1068" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="467" y="1086" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Status</text>
+<text x="467" y="1104" text-anchor="middle" fill="#8b949e" font-size="8">无异常的错误处理</text>
+<text x="467" y="1118" text-anchor="middle" fill="#8b949e" font-size="8">OK / NotFound / Corruption / IOError</text>
+
+<rect x="610" y="1068" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="732" y="1086" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Comparator</text>
+<text x="732" y="1104" text-anchor="middle" fill="#8b949e" font-size="8">可插拔键比较器</text>
+<text x="732" y="1118" text-anchor="middle" fill="#8b949e" font-size="8">默认字节序 · 可自定义</text>
+
+<rect x="875" y="1068" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="997" y="1086" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Env</text>
+<text x="997" y="1104" text-anchor="middle" fill="#8b949e" font-size="8">平台抽象层</text>
+<text x="997" y="1118" text-anchor="middle" fill="#8b949e" font-size="8">文件 I/O · 线程 · 时间</text>
+
+<!-- Row 2 -->
+<rect x="80" y="1136" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="202" y="1154" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">SkipList</text>
+<text x="202" y="1172" text-anchor="middle" fill="#8b949e" font-size="8">模板化并发跳表</text>
+<text x="202" y="1186" text-anchor="middle" fill="#8b949e" font-size="8">MemTable 的底层数据结构</text>
+
+<rect x="345" y="1136" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="467" y="1154" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Arena</text>
+<text x="467" y="1172" text-anchor="middle" fill="#8b949e" font-size="8">区域内存分配器</text>
+<text x="467" y="1186" text-anchor="middle" fill="#8b949e" font-size="8">批量分配 · 一次性释放</text>
+
+<rect x="610" y="1136" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="732" y="1154" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Cache (LRU)</text>
+<text x="732" y="1172" text-anchor="middle" fill="#8b949e" font-size="8">分片 LRU 缓存</text>
+<text x="732" y="1186" text-anchor="middle" fill="#8b949e" font-size="8">减少磁盘读取 · 16 分片</text>
+
+<rect x="875" y="1136" width="245" height="56" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="997" y="1154" text-anchor="middle" fill="#c9d1d9" font-size="11" font-weight="700">Version / VersionSet</text>
+<text x="997" y="1172" text-anchor="middle" fill="#8b949e" font-size="8">MVCC 元数据快照</text>
+<text x="997" y="1186" text-anchor="middle" fill="#8b949e" font-size="8">拷贝即写 · 并发读友好</text>
+
+<!-- ===== SECTION G: CONCURRENCY MODEL ===== -->
+<rect x="50" y="1208" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="1226" fill="#c9d1d9" font-size="12" font-weight="600">🔒 并发模型 — 单写多读</text>
+
+<rect x="80" y="1244" width="520" height="66" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="340" y="1264" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">写入 — 单线程串行</text>
+<text x="340" y="1282" text-anchor="middle" fill="#8b949e" font-size="9">mutex 保护 WriteBatch → Log → MemTable 整条路径</text>
+<text x="340" y="1298" text-anchor="middle" fill="#8b949e" font-size="9">后台 Compaction 线程独立运行，不阻塞前台写入</text>
+
+<rect x="620" y="1244" width="500" height="66" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="870" y="1264" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">读取 — 多线程无锁</text>
+<text x="870" y="1282" text-anchor="middle" fill="#8b949e" font-size="9">SSTable 文件不可变 → 天然无锁</text>
+<text x="870" y="1298" text-anchor="middle" fill="#8b949e" font-size="9">VersionSet 用引用计数 + Copy-on-Write 实现快照隔离</text>
+
+<!-- ===== SECTION H: PHILOSOPHY ===== -->
+<rect x="50" y="1326" width="1100" height="26" rx="6" fill="#161b22" stroke="#30363d" stroke-width="0.5"/>
+<text x="70" y="1344" fill="#c9d1d9" font-size="12" font-weight="600">🏛️ 设计哲学 — 精确的极少主义</text>
+
+<rect x="80" y="1362" width="340" height="52" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="250" y="1380" text-anchor="middle" fill="#f0f6fc" font-size="11" font-weight="600">接口隔离</text>
+<text x="250" y="1398" text-anchor="middle" fill="#8b949e" font-size="9">include/ 目录仅暴露必要 API · 实现完全隐藏</text>
+<text x="250" y="1410" text-anchor="middle" fill="#8b949e" font-size="9">Comparator · Env · FilterPolicy 全部可插拔</text>
+
+<rect x="440" y="1362" width="340" height="52" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="610" y="1380" text-anchor="middle" fill="#f0f6fc" font-size="11" font-weight="600">零拷贝数据流</text>
+<text x="610" y="1398" text-anchor="middle" fill="#8b949e" font-size="9">Slice 不拥有内存 · 传递指针而非复制</text>
+<text x="610" y="1410" text-anchor="middle" fill="#8b949e" font-size="9">Arena 批量分配 · 一次释放整个生命周期</text>
+
+<rect x="800" y="1362" width="320" height="52" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="960" y="1380" text-anchor="middle" fill="#f0f6fc" font-size="11" font-weight="600">不可变性即并发性</text>
+<text x="960" y="1398" text-anchor="middle" fill="#8b949e" font-size="9">SSTable 文件写入后永不修改</text>
+<text x="960" y="1410" text-anchor="middle" fill="#8b949e" font-size="9">读操作天然无锁 · 写操作简单有序</text>
+
+<!-- Footer -->
+<rect x="250" y="1440" width="700" height="40" rx="10" fill="#1f48a8" stroke="#1f6feb" stroke-width="2" filter="url(#glow)"/>
+<text x="600" y="1464" text-anchor="middle" fill="#f0f6fc" font-size="14" font-weight="700">用最小的机制，实现最大的能力</text>
+<text x="600" y="1476" text-anchor="middle" fill="#58a6ff" font-size="9">~20K 行 C++ · 无外部依赖 (除测试/Benchmark) · 被 Bitcoin Core、Chrome、Riak 等数百项目采用</text>
+
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-box" style="background:#1f6feb"></div> 公开 API</div>
+  <div class="legend-item"><div class="legend-box" style="background:#f59e0b"></div> 写路径</div>
+  <div class="legend-item"><div class="legend-box" style="background:#7c3aed"></div> MemTable / 内存</div>
+  <div class="legend-item"><div class="legend-box" style="background:#0ea5e9"></div> SSTable / LSM 层</div>
+  <div class="legend-item"><div class="legend-box" style="background:#10b981"></div> 读路径</div>
+  <div class="legend-item"><div class="legend-box" style="background:#ef4444"></div> Compaction</div>
+  <div class="legend-item"><div class="legend-box" style="background:#ec4899"></div> 元数据 / 并发控制</div>
+</div>
+
+</body>
+</html>
